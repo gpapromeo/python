@@ -1,7 +1,7 @@
 """
 Author:         Romeo Casesa
 First issue:    13-04-2022
-Last modified:  13-04-2022
+Last modified:  14-04-2022
 
 This file simulates data from IoT nodes.
 It is assumed that IoT nodes transmit at fixed intervals
