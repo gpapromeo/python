@@ -6,7 +6,7 @@ Last modified:  14-04-2022
 This file simulates data from IoT nodes.
 It is assumed that IoT nodes transmit at fixed intervals
 """
-
+import numpy as np
 import pandas as pd
 import datetime
 
@@ -37,7 +37,8 @@ for i in range(N_CU):
     transm_time = sim_start
     for ta in range(transm_attempts):
         dt = {}
-        transm_time = transm_time + CU_td[i]
+        transm_time = (transm_time + CU_td[i]
+                       + datetime.timedelta(0, np.random.randint(-120, 120)))
         dt.update({'CU': i})
         dt.update({'timestamp': transm_time})
         dt.update({'message': create_mess(i, transm_time)})
