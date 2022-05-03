@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import datetime
 from collections import deque
+from copy import deepcopy
 
 
 def cust_df_to_queue(cust_df):
@@ -44,20 +45,31 @@ def cust_df_to_queue(cust_df):
         """
     return cust_queue
 
-def send_rule()
+def send_policy(satellite_queue):
+    """
+    Specify the policy for downlinking data
+    """
+    return
+
 
 cust_df = pd.read_pickle('customer_node_data.pkl')
 cust_queue = cust_df_to_queue(cust_df)
 
 contacts = pd.read_pickle('contact_events.pkl')
 sats = contacts.loc[:, 'satellite'].unique()
+
+# each satellite has its own cu_queue where to pop items from. This is 
+# needed as the same communication can be received by multiple satellites.
 sats_queue = dict()
-[sats_queue.update({sat_id: deque()}) for sat_id in sats]
+[sats_queue.update({sat_id: {'onboard_queue': deque(),
+                             "cu_queue": deepcopy(cust_queue)}}) for sat_id in sats]
 
 for i in range(len(contacts)):
     contact = contacts.loc[i, ]
     if contact['duration'] > datetime.timedelta(seconds=20):
         if contact['link'] == 'Downlink':
+            send_policy(sats_queue[contact['satellite']]['onboard_queue'])
+            sats_queue[contact['satellite']]['onboard_queue'].clear() # empty the queue
             pass
         elif contact['link'] == 'Uplink':
             pass
