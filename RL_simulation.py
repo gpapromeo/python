@@ -45,6 +45,7 @@ def cust_df_to_queue(cust_df):
         """
     return cust_queue
 
+
 def send_policy(satellite_queue):
     """
     Specify the policy for downlinking data
@@ -58,7 +59,7 @@ cust_queue = cust_df_to_queue(cust_df)
 contacts = pd.read_pickle('contact_events.pkl')
 sats = contacts.loc[:, 'satellite'].unique()
 
-# each satellite has its own cu_queue where to pop items from. This is 
+# each satellite has its own cu_queue where to pop items from. This is
 # needed as the same communication can be received by multiple satellites.
 sats_queue = dict()
 [sats_queue.update({sat_id: {'onboard_queue': deque(),
@@ -66,12 +67,37 @@ sats_queue = dict()
 
 for i in range(len(contacts)):
     contact = contacts.loc[i, ]
-    if contact['duration'] > datetime.timedelta(seconds=20):
+    breakme = False
+    if contact['duration'] > datetime.timedelta(seconds=5):
         if contact['link'] == 'Downlink':
             send_policy(sats_queue[contact['satellite']]['onboard_queue'])
-            sats_queue[contact['satellite']]['onboard_queue'].clear() # empty the queue
-            pass
+            sats_queue[contact['satellite']]['onboard_queue'].clear()  # empty the queue
         elif contact['link'] == 'Uplink':
-            pass
+            msg_que = sats_queue[contact['satellite']]['cu_queue'][contact['ground station']]
+            try:
+                msg = msg_que.popleft()
+            except IndexError:
+                continue
+            if contact['end'] <= msg['timestamp']:
+                msg_que.appendleft(msg)
+                continue
+            else:
+                while msg['timestamp'] < contact['end']:
+                    if msg['timestamp'] < contact['start']:
+                        try:
+                            msg = msg_que.popleft()
+                        except IndexError:
+                            breakme = True
+                            break
+                    else:
+                        sats_queue[contact['satellite']]['onboard_queue'].append(msg)
+                        try:
+                            msg = msg_que.popleft()
+                        except IndexError:
+                            breakme = True
+                            break
+                if breakme:
+                    break
+                msg_que.appendleft(msg)
         else:
             pass
