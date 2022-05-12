@@ -30,7 +30,7 @@ sim_start = datetime.datetime(2023, 1, 1, 0, 0, 0, 0)
 sim_end = datetime.datetime(2023, 3, 1, 0, 0, 0, 0)
 # Initialize dataframe
 df_dict = []
-for i in range(N_CU):
+for i in range(N_CU):   # NB "i" is not the CU id!
     # Number of transmission attempts within the simulation time.
     # Assumes transmissions are equally distributed in time.
     transm_attempts = (sim_end - sim_start) // CU_td[i]
@@ -39,9 +39,9 @@ for i in range(N_CU):
         dt = {}
         transm_time = (transm_time + CU_td[i]
                        + datetime.timedelta(0, np.random.randint(-120, 120)))
-        dt.update({'CU': i})
+        dt.update({'CU': i+1})
         dt.update({'timestamp': transm_time})
-        dt.update({'message': create_mess(i, transm_time)})
+        dt.update({'message': create_mess(i+1, transm_time)})
         df_dict.append(dt)
 df = pd.DataFrame(df_dict)
 df.to_pickle('customer_node_data.pkl')
