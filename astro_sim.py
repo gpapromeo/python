@@ -52,6 +52,7 @@ class ground_station:
         return self.gs_skycoord
 
     def propagate(self, time):
+        self.int_clock += time  # update internal clock
         # update longitude due to earth rotation.
         self.lon = (self.lon + time/(24*60*60) * 360) % 360
         # update coordinate object
@@ -72,17 +73,27 @@ class sched_transm_gs(ground_station):
     def __init__(self, lat, lon, alt=0, name='UNKNOWN GS'):
         super().__init__(lat, lon, alt, name)
         self.sched_time = 60 * 10   # schedul transm interval in seconds
-        self.repeat = 3
-        self.repeat_count = 0
+        self.last_trnsmt = self.int_clock
+        self.repeat = 1     # Number of message repeats
+        self.repeat_count = 0   # Counter for repeated messages
 
-    def dgp():
-        return np.random.randint(0,25)
+    def dgp(self):      # Data Generation Process
+        return np.random.randint(0, 25)
 
     def transmission(self):
-        if self.repeat_count > 0:
+        if self.int_clock - self.last_trnsmt > self.sched_time:
+            # Run this every sched_time seconds
+            self.last_trnsmt = self.int_clock
+            self.data = self.dgp()
+            self.repeat_count = self.repeat
+            return self.data
+        elif self.repeat_count > 0:
+            # Run this when the repeat counter is positive
+            # (i.e. we repeat the last transmission)
             self.repeat_count -= 1
-            return data
-        if self.int_clock > self.sched_time:
+            return self.data
+        else:
+            return None
 
 
 N_constellation = 4
@@ -101,14 +112,16 @@ for i in range(N_constellation):
                           nu + 360*i/N_constellation * u.deg,
                           name='PICO'+str(i)))
 
-gs = ground_station(45.5, 10.2, 0, 'Brescia 01')
+# gs = ground_station(45.5, 10.2, 0, 'Brescia 01')
+gs = sched_transm_gs(45.5, 10.2, 0, 'Brescia 01')
 
 t_stp = 60  # seconds
 sim_steps = 200
 for stp in range(sim_steps):
     gs.propagate(t_stp)
+    data = gs.transmission()
     for sat in sats:
         sat.propagate(t_stp)
         link_angl = gs.skycoord().separation(sat.skycoord())
-        if link_angl <= 70 * u.degree:
-            print(f'connection with satellite {sat.name}')
+        if link_angl <= 70 * u.degree and data is not None:
+            print(f'Satellite {sat.name} received {data}')
