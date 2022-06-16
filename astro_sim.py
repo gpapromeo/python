@@ -6,6 +6,8 @@ import plotly.io as pio
 from astropy.coordinates import SkyCoord
 import astropy.coordinates as coord
 import numpy as np
+import pandas as pd
+import copy
 
 
 class satellite:
@@ -76,6 +78,7 @@ class sched_transm_gs(ground_station):
         self.last_trnsmt = self.int_clock
         self.repeat = 1     # Number of message repeats
         self.repeat_count = 0   # Counter for repeated messages
+        self.msg_id = -1     # message ID
 
     def dgp(self):      # Data Generation Process
         return np.random.randint(0, 25)
@@ -83,17 +86,18 @@ class sched_transm_gs(ground_station):
     def transmission(self):
         if self.int_clock - self.last_trnsmt > self.sched_time:
             # Run this every sched_time seconds
+            self.msg_id += 1
             self.last_trnsmt = self.int_clock
             self.data = self.dgp()
             self.repeat_count = self.repeat
-            return self.data
+            return self.data, self.msg_id
         elif self.repeat_count > 0:
             # Run this when the repeat counter is positive
             # (i.e. we repeat the last transmission)
             self.repeat_count -= 1
-            return self.data
+            return self.data, self.msg_id
         else:
-            return None
+            return None, None
 
 
 N_constellation = 4
@@ -116,12 +120,23 @@ for i in range(N_constellation):
 gs = sched_transm_gs(45.5, 10.2, 0, 'Brescia 01')
 
 t_stp = 60  # seconds
-sim_steps = 200
+sim_steps = 10000  # simulation steps
+data_row = {'msg_id': -1}
+[data_row.update({sat.name: 0}) for sat in sats]
+data_lst = list()
+
 for stp in range(sim_steps):
     gs.propagate(t_stp)
-    data = gs.transmission()
+    data, id = gs.transmission()
+    data_tmp_row = copy.deepcopy(data_row)
     for sat in sats:
         sat.propagate(t_stp)
         link_angl = gs.skycoord().separation(sat.skycoord())
         if link_angl <= 70 * u.degree and data is not None:
-            print(f'Satellite {sat.name} received {data}')
+            # print(f'Satellite {sat.name} received {data}')
+            data_tmp_row.update({'msg_id': id, sat.name: 1})
+    if data_tmp_row['msg_id'] != -1:
+        data_lst.append(data_tmp_row)
+df = pd.DataFrame(data_lst)
+sdf = df.groupby('msg_id').sum()
+pd.to_pickle(sdf, 'dgp_contacts.pkl')
