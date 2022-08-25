@@ -18,6 +18,7 @@ class satellite:
         self.orb = Orbit.from_classical(Earth, a, ecc, inc, raan, argp, nu)
         self.name = name    # satellite name
         self.int_clock = INT_CLOCK  # internal clock
+        self.memory = list()
 
     def propagate(self, time):
         self.orb = self.orb.propagate(time * u.s)   # propagate position
@@ -32,6 +33,9 @@ class satellite:
         sat_sc.ra.wrap_angle = 180 * u.degree  # angles +/-180deg
         sat_sc.dec.wrap_angle = 90 * u.degree  # angles +/-90deg
         return sat_sc
+
+    def rcv_data(self, node_name, msg_ID, msg_payload):
+        self.memory.append((node_name, msg_ID, msg_payload))
 
 
 class ground_station:
@@ -99,7 +103,7 @@ class sched_transm_gs(ground_station):
             # Run this every sched_time seconds
             self.msg_id += 1
             self.last_trnsmt = self.int_clock
-            self.data = [self.dgp(), [self.lat, self.lon]]
+            self.data = self.dgp()
             self.repeat_count = self.repeat
             return self.data, self.msg_id
         elif self.repeat_count > 0:
@@ -111,8 +115,21 @@ class sched_transm_gs(ground_station):
             return None, None
 
 
+class master_gs(ground_station):
+    def __init__(self, lat, lon, alt=0, name='UNKNOWN MASTER GS'):
+        super().__init__(lat, lon, alt, name)
+        self.data = dict()      # downloaded data
+        # For each satellite a list with downloaded data
+        # is stored.
+
+    def rcv_data(self, sat_name, data):
+        if sat_name not in self.data.keys():
+            self.data.update({sat_name: list()})
+        self.data[sat_name].extend(data)
+
+
 N_constellation = 4
-gs_coord_lst = [[45.5, 10.2], [50, 8], [70, -110], [75, -112]]
+gs_coord_lst = [[55.5, 10.2], [50, 8], [70, -110], [75, -112]]
 sats = list()
 
 a = 6928 * u.km
@@ -137,6 +154,7 @@ for i in range(len(gs_coord_lst)):
 
 # gs = ground_station(45.5, 10.2, 0, 'Brescia 01')
 # gs = sched_transm_gs(45.5, 10.2, 0, 'Brescia 01')
+mgs = master_gs(45.45, 10.25, 100, 'Master Brescia GS')
 
 t_stp = 60  # seconds
 sim_steps = 1000  # simulation steps
@@ -150,19 +168,28 @@ for stp in range(sim_steps):
     for sat in sats:
         sat.propagate(t_stp)    # propagate all satellites
     for gs in gss:
-        gs.propagate(t_stp)     # propagate all ground stations
+        gs.propagate(t_stp)     # propagate all ground stations nodes
+    mgs.propagate(t_stp)        # propagate master ground station
+    mgs_sc = mgs.skycoord()
+
+    for sat in sats:
+        los_evnt = line_of_sight([mgs_sc.x, mgs_sc.y, mgs_sc.z] * u.km,
+                                 sat.orb.r, 6371*u.km)
+        if los_evnt >= 0:
+            mgs.rcv_data(sat.name, sat.memory)
 
     for gs in gss:
         gs_sc = gs.skycoord()
-        data, id = gs.transmission()
+        payload, id = gs.transmission()
         data_tmp_row = copy.deepcopy(data_row)
         data_tmp_row.update({'latitude': gs.lat, 'longitude': gs.lon,
                             'time': gs.int_clock})
         for sat in sats:
             los_evnt = line_of_sight([gs_sc.x, gs_sc.y, gs_sc.z] * u.km,
                                      sat.orb.r, 6371*u.km)
-            if los_evnt >= 0 and data is not None:
-                # print(f'Satellite {sat.name} received {data}')
+            if los_evnt >= 0 and payload is not None:
+                # The satellite received data!
+                sat.rcv_data(gs.name, id, payload)
                 distance = gs_sc.separation_3d(sat.skycoord())
                 data_tmp_row.update({'msg_id': id, sat.name: distance})
         if data_tmp_row['msg_id'] != -1:
