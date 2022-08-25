@@ -35,14 +35,14 @@ class satellite:
 
 
 class ground_station:
-    def __init__(self, lat, lon, alt=0, name='UNKNOWN GS'):
+    def __init__(self, lat, lon, alt=1, name='UNKNOWN GS'):
         """
         altitude in meters
         """
         self.lat = lat  # latitude earth fixed
         self.lon = lon  # longitude earth fixed
         self.lon_IRF = lon  # longitude in inertial reference frame
-        self.alt = alt  # altitude in meters
+        self.alt = alt  # altitude in meters. Must be greater than 0
 
         # Create the coordinate objects
         self.gs = coord.EarthLocation.from_geodetic(lon=lon*u.degree,
@@ -112,6 +112,7 @@ class sched_transm_gs(ground_station):
 
 
 N_constellation = 4
+gs_coord_lst = [[45.5, 10.2], [50, 8], [70, -110], [75, -112]]
 sats = list()
 
 a = 6928 * u.km
@@ -129,11 +130,16 @@ for i in range(N_constellation):
 
 sat_names = [sat.name for sat in sats]
 
+gss = list()
+for i in range(len(gs_coord_lst)):
+    gss.append(sched_transm_gs(gs_coord_lst[i][0],
+               gs_coord_lst[i][1], 100, 'GS' + str(i)))
+
 # gs = ground_station(45.5, 10.2, 0, 'Brescia 01')
-gs = sched_transm_gs(45.5, 10.2, 0, 'Brescia 01')
+# gs = sched_transm_gs(45.5, 10.2, 0, 'Brescia 01')
 
 t_stp = 60  # seconds
-sim_steps = 100  # simulation steps
+sim_steps = 1000  # simulation steps
 data_row = {'msg_id': -1, 'data': np.nan, 'time': np.nan,
             'latitude': np.nan, 'longitude': np.nan}
 [data_row.update({sat.name: 0}) for sat in sats]
@@ -141,33 +147,37 @@ keys = list(data_row.keys())
 data_lst = list()
 
 for stp in range(sim_steps):
-    gs.propagate(t_stp)
-    gs_sc = gs.skycoord()
-    data, id = gs.transmission()
-    data_tmp_row = copy.deepcopy(data_row)
-    data_tmp_row.update({'latitude': gs.lat, 'longitude': gs.lon,
-                         'time': gs.int_clock})
     for sat in sats:
-        sat.propagate(t_stp)
-        los_evnt = line_of_sight([gs_sc.x, gs_sc.y, gs_sc.z] * u.km,
-                                 sat.orb.r, 6371*u.km)
-        if los_evnt >= 0 and data is not None:
-            # print(f'Satellite {sat.name} received {data}')
-            distance = gs_sc.separation_3d(sat.skycoord())
-            data_tmp_row.update({'msg_id': id, sat.name: distance})
-    if data_tmp_row['msg_id'] != -1:
-        dicti = copy.deepcopy(data_tmp_row)
-        for key in keys:
-            if key not in sat_names:
-                dicti.pop(key)
-            elif dicti[key] == 0:
-                dicti.pop(key)
-        dicti_values = {key: i for (key, _), i in
-                        zip(sorted(dicti.items(),
-                                   key=lambda item: item[1]),
-                            range(1, len(dicti)+1))}
-        data_tmp_row.update(dicti_values)
-        data_lst.append(data_tmp_row)
+        sat.propagate(t_stp)    # propagate all satellites
+    for gs in gss:
+        gs.propagate(t_stp)     # propagate all ground stations
+
+    for gs in gss:
+        gs_sc = gs.skycoord()
+        data, id = gs.transmission()
+        data_tmp_row = copy.deepcopy(data_row)
+        data_tmp_row.update({'latitude': gs.lat, 'longitude': gs.lon,
+                            'time': gs.int_clock})
+        for sat in sats:
+            los_evnt = line_of_sight([gs_sc.x, gs_sc.y, gs_sc.z] * u.km,
+                                     sat.orb.r, 6371*u.km)
+            if los_evnt >= 0 and data is not None:
+                # print(f'Satellite {sat.name} received {data}')
+                distance = gs_sc.separation_3d(sat.skycoord())
+                data_tmp_row.update({'msg_id': id, sat.name: distance})
+        if data_tmp_row['msg_id'] != -1:
+            dicti = copy.deepcopy(data_tmp_row)
+            for key in keys:
+                if key not in sat_names:
+                    dicti.pop(key)
+                elif dicti[key] == 0:
+                    dicti.pop(key)
+            dicti_values = {key: i for (key, _), i in
+                            zip(sorted(dicti.items(),
+                                    key=lambda item: item[1]),
+                                range(1, len(dicti)+1))}
+            data_tmp_row.update(dicti_values)
+            data_lst.append(data_tmp_row)
 
 df = pd.DataFrame(data_lst)
 # sdf = df.groupby('msg_id').sum()
