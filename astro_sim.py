@@ -37,6 +37,11 @@ class satellite:
     def rcv_data(self, node_name, msg_ID, msg_payload):
         self.memory.append((node_name, msg_ID, msg_payload))
 
+    def dwnl_data(self):
+        memory = self.memory
+        self.memory = list()
+        return memory
+
 
 class ground_station:
     def __init__(self, lat, lon, alt=1, name='UNKNOWN GS'):
@@ -127,85 +132,124 @@ class master_gs(ground_station):
             self.data.update({sat_name: list()})
         self.data[sat_name].extend(data)
 
+    def n_sat_received(self):
+        return len(self.data)
 
+    def clear_memory(self):
+        self.data = dict()
+
+
+class constellation_env:
+    def __init__(self, mgs_lat, mgs_lon, mgs_alt, mgs_name):
+        self.sats = list()
+        self.gss = list()
+        self.mgs = master_gs(mgs_lat, mgs_lon, mgs_alt, mgs_name)
+
+    def reset(self):
+        self.sat_names = [sat.name for sat in self.sats]
+        self.data_lst = list()
+        # TODO reset satellite clock and msg counters
+        # TODO reset ground stations clock and msg counters
+        self.observation = self.sym_step()
+        return self.observation
+
+    def add_gs_lst(self, gs_coord_lst):
+        self.gs_coord_lst = gs_coord_lst
+
+        for i in range(len(gs_coord_lst)):
+            self.gss.append(sched_transm_gs(gs_coord_lst[i][0],
+                                            gs_coord_lst[i][1],
+                                            100, 'GS' + str(i)))
+
+    def add_uniform_const(self, N_constellation, a, ecc, inc,
+                          raan, argp, nu):
+        for i in range(N_constellation):
+            self.sats.append(satellite(a, ecc, inc, raan, argp,
+                                       nu + 360*i/N_constellation * u.deg,
+                                       name='PICO'+str(i)))
+
+    def sym_step(self):
+        t_stp = 60  # seconds
+        data_row = {'msg_id': -1, 'data': np.nan, 'time': np.nan,
+                    'latitude': np.nan, 'longitude': np.nan}
+        [data_row.update({sat.name: 0}) for sat in self.sats]
+        keys = list(data_row.keys())
+
+        while True:
+            for sat in self.sats:
+                sat.propagate(t_stp)    # propagate all satellites
+            for gs in self.gss:
+                gs.propagate(t_stp)     # propagate all ground stations nodes
+            self.mgs.propagate(t_stp)        # propagate master ground station
+
+            mgs_sc = self.mgs.skycoord()
+            for sat in self.sats:
+                los_evnt = line_of_sight([mgs_sc.x, mgs_sc.y, mgs_sc.z] * u.km,
+                                         sat.orb.r, 6371*u.km)
+                if los_evnt >= 0:
+                    self.mgs.rcv_data(sat.name, sat.dwnl_data())
+
+            for gs in self.gss:
+                gs_sc = gs.skycoord()
+                payload, id = gs.transmission()
+                data_tmp_row = copy.deepcopy(data_row)
+                data_tmp_row.update({'latitude': gs.lat, 'longitude': gs.lon,
+                                    'time': gs.int_clock})
+                for sat in self.sats:
+                    los_evnt = line_of_sight([gs_sc.x, gs_sc.y, gs_sc.z] * u.km,
+                                             sat.orb.r, 6371*u.km)
+                    if los_evnt >= 0 and payload is not None:
+                        # The satellite received data!
+                        sat.rcv_data(gs.name, id, payload)
+                        distance = gs_sc.separation_3d(sat.skycoord())
+                        data_tmp_row.update({'msg_id': id, sat.name: distance})
+                if data_tmp_row['msg_id'] != -1:
+                    dicti = copy.deepcopy(data_tmp_row)
+                    for key in keys:
+                        if key not in self.sat_names:
+                            dicti.pop(key)
+                        elif dicti[key] == 0:
+                            dicti.pop(key)
+                    dicti_values = {key: i for (key, _), i in
+                                    zip(sorted(dicti.items(),
+                                               key=lambda item: item[1]),
+                                        range(1, len(dicti)+1))}
+                    data_tmp_row.update(dicti_values)
+                    self.data_lst.append(data_tmp_row)
+            if self.mgs.n_sat_received == len(self.sats):
+                data = self.mgs.data
+                self.mgs.clear_memory()
+                return(data)
+
+    def policy(self, action):
+        pass
+
+    def step(self, action):
+        reward = self.policy(action)
+        self.observation = self.sym_step()   # New data
+        return self.observation, reward
+
+    def save_data_lst(self):
+        df = pd.DataFrame(self.data_lst)
+        # sdf = df.groupby('msg_id').sum()
+        pd.to_pickle(df, 'dgp_contacts.pkl')
+
+
+const = constellation_env(45.45, 10.25, 100, 'Master Brescia GS')
+
+# Adding satellites to the constellation
 N_constellation = 4
-gs_coord_lst = [[55.5, 10.2], [50, 8], [70, -110], [75, -112]]
-sats = list()
-
 a = 6928 * u.km
 ecc = 0 * u.one
 inc = 97.59 * u.deg
 raan = 270 * u.deg
 argp = 0 * u.deg
 nu = -180 * u.deg
+const.uniform_const(N_constellation, a, ecc, inc, raan, argp, nu)
 
-sats = list()
-for i in range(N_constellation):
-    sats.append(satellite(a, ecc, inc, raan, argp,
-                          nu + 360*i/N_constellation * u.deg,
-                          name='PICO'+str(i)))
+# Adding ground stations nodes.
+gs_coord_lst = [[55.5, 10.2], [50, 8], [70, -110], [75, -112]]
+const.add_gs_lst(gs_coord_lst)
 
-sat_names = [sat.name for sat in sats]
-
-gss = list()
-for i in range(len(gs_coord_lst)):
-    gss.append(sched_transm_gs(gs_coord_lst[i][0],
-               gs_coord_lst[i][1], 100, 'GS' + str(i)))
-
-# gs = ground_station(45.5, 10.2, 0, 'Brescia 01')
-# gs = sched_transm_gs(45.5, 10.2, 0, 'Brescia 01')
-mgs = master_gs(45.45, 10.25, 100, 'Master Brescia GS')
-
-t_stp = 60  # seconds
-sim_steps = 1000  # simulation steps
-data_row = {'msg_id': -1, 'data': np.nan, 'time': np.nan,
-            'latitude': np.nan, 'longitude': np.nan}
-[data_row.update({sat.name: 0}) for sat in sats]
-keys = list(data_row.keys())
-data_lst = list()
-
-for stp in range(sim_steps):
-    for sat in sats:
-        sat.propagate(t_stp)    # propagate all satellites
-    for gs in gss:
-        gs.propagate(t_stp)     # propagate all ground stations nodes
-    mgs.propagate(t_stp)        # propagate master ground station
-    mgs_sc = mgs.skycoord()
-
-    for sat in sats:
-        los_evnt = line_of_sight([mgs_sc.x, mgs_sc.y, mgs_sc.z] * u.km,
-                                 sat.orb.r, 6371*u.km)
-        if los_evnt >= 0:
-            mgs.rcv_data(sat.name, sat.memory)
-
-    for gs in gss:
-        gs_sc = gs.skycoord()
-        payload, id = gs.transmission()
-        data_tmp_row = copy.deepcopy(data_row)
-        data_tmp_row.update({'latitude': gs.lat, 'longitude': gs.lon,
-                            'time': gs.int_clock})
-        for sat in sats:
-            los_evnt = line_of_sight([gs_sc.x, gs_sc.y, gs_sc.z] * u.km,
-                                     sat.orb.r, 6371*u.km)
-            if los_evnt >= 0 and payload is not None:
-                # The satellite received data!
-                sat.rcv_data(gs.name, id, payload)
-                distance = gs_sc.separation_3d(sat.skycoord())
-                data_tmp_row.update({'msg_id': id, sat.name: distance})
-        if data_tmp_row['msg_id'] != -1:
-            dicti = copy.deepcopy(data_tmp_row)
-            for key in keys:
-                if key not in sat_names:
-                    dicti.pop(key)
-                elif dicti[key] == 0:
-                    dicti.pop(key)
-            dicti_values = {key: i for (key, _), i in
-                            zip(sorted(dicti.items(),
-                                    key=lambda item: item[1]),
-                                range(1, len(dicti)+1))}
-            data_tmp_row.update(dicti_values)
-            data_lst.append(data_tmp_row)
-
-df = pd.DataFrame(data_lst)
-# sdf = df.groupby('msg_id').sum()
-pd.to_pickle(df, 'dgp_contacts.pkl')
+# Reset environment
+const.reset()
