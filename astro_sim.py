@@ -1,16 +1,21 @@
+from msilib.schema import Error
 from astropy import units as u
-from poliastro.bodies import Earth, Sun
+from poliastro.bodies import Earth
 from poliastro.twobody import Orbit
-from poliastro.plotting import OrbitPlotter3D
+# from poliastro.plotting import OrbitPlotter3D
 from poliastro.core.events import line_of_sight
-import plotly.io as pio
 from astropy.coordinates import SkyCoord
 import astropy.coordinates as coord
 import numpy as np
 import pandas as pd
 import copy
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.autograd import Variable
 
 INT_CLOCK = 1672531200  # 01.01.2023
+
 
 class satellite:
     def __init__(self, a, ecc, inc, raan, argp, nu, name='UNKNWON SAT'):
@@ -139,6 +144,19 @@ class master_gs(ground_station):
         self.data = dict()
 
 
+class policy_nn(nn.Module):
+    def __init__(self, nsat, ngs):
+        super(policy_nn, self).__init__()
+        self.main = nn.Sequential(
+            nn.Linear((nsat, ngs), (nsat, ngs, 64)),
+            nn.ReLU(),
+            nn.Linear((nsat, ngs, 64), (nsat, ngs)),
+        )
+
+    def forward(self, input):
+        return self.main(input)
+
+
 class constellation_env:
     def __init__(self, mgs_lat, mgs_lon, mgs_alt, mgs_name):
         self.sats = list()
@@ -216,16 +234,28 @@ class constellation_env:
                                         range(1, len(dicti)+1))}
                     data_tmp_row.update(dicti_values)
                     self.data_lst.append(data_tmp_row)
-            if self.mgs.n_sat_received == len(self.sats):
+            if self.mgs.n_sat_received() == len(self.sats):
                 data = self.mgs.data
+                m = data.values()
+                obs = np.zeros((len(m), len(self.gs_coord_lst)))
+                for m_sat, sat_id in zip(m, range(len(m))):
+                    for msg_m in m_sat:
+                        obs[sat_id, int(msg_m[0][2])] += 1
                 self.mgs.clear_memory()
-                return(data)
+                return obs
 
-    def policy(self, action):
-        pass
+    def policy_reward(self, action):
+        if len(action) != len(self.sat_names):
+            raise Error
+        elif len(action[0]) != len(self.gs_coord_lst):
+            raise Error
+        else:
+            gs_sum = np.sum(action, axis=0)
+            individual_gs = np.array(gs_sum > 0, dtype=int)
+            return np.sum(individual_gs)
 
     def step(self, action):
-        reward = self.policy(action)
+        reward = self.policy_reward(action)
         self.observation = self.sym_step()   # New data
         return self.observation, reward
 
@@ -245,7 +275,7 @@ inc = 97.59 * u.deg
 raan = 270 * u.deg
 argp = 0 * u.deg
 nu = -180 * u.deg
-const.uniform_const(N_constellation, a, ecc, inc, raan, argp, nu)
+const.add_uniform_const(N_constellation, a, ecc, inc, raan, argp, nu)
 
 # Adding ground stations nodes.
 gs_coord_lst = [[55.5, 10.2], [50, 8], [70, -110], [75, -112]]
@@ -253,3 +283,14 @@ const.add_gs_lst(gs_coord_lst)
 
 # Reset environment
 const.reset()
+
+# Training policy
+
+
+# Start demonstration 
+for _ in range(10):
+    action = [np.random.randint(0, 2, 4),
+              np.random.randint(0, 2, 4),
+              np.random.randint(0, 2, 4),
+              np.random.randint(0, 2, 4)]
+    observation, reward, = const.step(action)
