@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
+import random
 
 INT_CLOCK = 1672531200  # 01.01.2023
 
@@ -26,7 +27,7 @@ class satellite:
         self.memory = list()
 
     def propagate(self, time):
-        self.orb = self.orb.propagate(time * u.s)   # propagate position
+        self.orb = self.orb.propagate(time * u.s, method='ValladoPropagator')   # propagate position
         return None
 
     def skycoord(self):
@@ -146,7 +147,7 @@ class master_gs(ground_station):
 
 class policy_nn(nn.Module):
     def __init__(self, nsat, ngs):
-        super(policy_nn, self).__init__()
+        super().__init__()
         self.main = nn.Sequential(
             nn.Linear((nsat, ngs), (nsat, ngs, 64)),
             nn.ReLU(),
@@ -264,6 +265,58 @@ class constellation_env:
         # sdf = df.groupby('msg_id').sum()
         pd.to_pickle(df, 'dgp_contacts.pkl')
 
+
+class constellation_env_RL(constellation_env):
+    def __init__(self, mgs_lat, mgs_lon, mgs_alt, mgs_name, policy_net=None):
+        super().__init__(mgs_lat, mgs_lon, mgs_alt, mgs_name)
+        if policy_net is not None:
+            self.policynetwork = policy_net
+        else:
+            self.policynetwork = None
+
+    def reset(self):
+        super().reset()
+
+        if self.policynetwork is None:
+            self.policynetwork = policy_nn(len(self.sats), len(self.gss))
+            self.criterion = nn.BCEWithLogitsLoss()
+            self.optimizer = optim.SGD(self.policynetwork.parameters(),
+                                       lr=1e-1)
+
+    def actn_predict_explr(self, observation, exploration_threshold):
+        """!
+        Run the Policy Neural Network to obtain the action to be taken.
+        Action is selected as the one with the highest reward based on the
+        input state.
+        """
+        rnd_actn = [np.random.randint(0, 2, 4),
+                    np.random.randint(0, 2, 4),
+                    np.random.randint(0, 2, 4),
+                    np.random.randint(0, 2, 4)]
+        obs_tensor = Variable(torch.FloatTensor(observation)).view(1, len(self.sats), len(self.gss))
+        return (self.policynetwork.predict(obs_tensor)
+                if random.random() > exploration_threshold
+                else rnd_actn)
+
+    def train(self, plcy_iter):
+        """!
+        Train the model.
+        @param plcy_iter Number of policy iterations
+        """
+        for i in range(plcy_iter):
+            self.exprnce = list()
+            # Trajectories (or games) upon which the policy is evaluated
+            # This data will be used for training the policyNet
+            observation = self.reset()
+            self.exprnce.append(list())
+            # apply policy to decide next action
+            actn = self.actn_predict_explr(observation, 0.3)
+            newobservation, reward, done, _ = self.env.step(actn)
+            self.exprnce[i].append([observation, actn,
+                                            reward, newobservation])
+            observation = newobservation
+            print("[msg] >> Policy iteration,", i+1,
+                  "terminated with score:", reward)
 
 const = constellation_env(45.45, 10.25, 100, 'Master Brescia GS')
 
