@@ -12,7 +12,7 @@ from poliastro.twobody import Orbit
 from poliastro.core.events import line_of_sight
 
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
-
+from ray.rllib.algorithms import ppo
 
 INT_CLOCK = 1672531200  # 01.01.2023
 
@@ -26,7 +26,7 @@ class satellite:
         self.memory = list()
 
     def propagate(self, time):
-        self.orb = self.orb.propagate(time * u.s, method='ValladoPropagator')   # propagate position
+        self.orb = self.orb.propagate(time * u.s)   # propagate position
         return None
 
     @property
@@ -47,9 +47,9 @@ class satellite:
         memory = self.memory
         self.memory = list()
         return memory
-    
+
     def reset(self):
-        return None       
+        return None
 
 
 class ground_station:
@@ -89,9 +89,10 @@ class ground_station:
     def skycoord_cartesian(self):
         self.gs = coord.EarthLocation.from_geodetic(lon=self.lon_IRF*u.degree,
                                                     lat=self.lat*u.degree)
-        self.gs_skycoord_cartesian = SkyCoord(ra=self.gs.lon,   # ra = longitude
+        self.gs_skycoord_cartesian = SkyCoord(ra=self.gs.lon,  # ra = longitude
                                               ec=self.gs.lat,  # dec = latitude
-                                              distance=6371*u.km + self.alt*u.m)
+                                              distance=6371*u.km
+                                              + self.alt * u.m)
         self.gs_skycoord_cartesian.ra.wrap_angle = 180 * u.degree
         self.gs_skycoord_cartesian.dec.wrap_angle = 90 * u.degree
         self.gs_skycoord_cartesian.representation_type = 'cartesian'
@@ -158,14 +159,15 @@ class master_gs(ground_station):
             sat_mem = self.data[sat_name]
             for node_name, _, _ in sat_mem:
                 node_id = int(node_name.split('_')[-1])
-                sat_obs = obs['sat_name']
+                sat_obs = obs[sat_name]
                 sat_obs[node_id] = 1
-                obs.update({sat_name: sat_obs})
+                # The following is not necessary because a shallow copy is taken.
+                # obs.update({sat_name: sat_obs})
         self.data = dict()
         return obs
 
 
-class BasicMultiAgent(MultiAgentEnv):
+class PICO_MultiAgent(MultiAgentEnv):
     """Env of N independent agents, each of which exits after 25 steps.
     credit: https://github.com/ray-project/ray/blob/master/rllib/examples/env/multi_agent.py
     https://www.gymlibrary.dev/content/environment_creation/
@@ -198,23 +200,25 @@ class BasicMultiAgent(MultiAgentEnv):
                                     'node_' + str(i)) for i in range(N_nodes)]
         self.dones = set()
         self.observation_space = dict()
-        [self.observation_space.update({sat_name: gym.spaces.MultiBinary(N_nodes)})
+        [self.observation_space.update({sat_name:
+                                        gym.spaces.MultiBinary(N_nodes)})
             for sat_name in self.sat_names]
         self.action_space = dict()
         [self.action_space.update({sat_name: gym.spaces.MultiBinary(N_nodes)})
             for sat_name in self.sat_names]
         self.resetted = False
 
-    def reset(self, seed):
-        super().reset(seed=seed)
+    def reset(self):
         self.resetted = True
         self.gss = [sched_transm_gs(np.random.randint(-89, 89),
                                     np.random.randint(-179, 180),
                                     np.random.randint(1, 1000),
-                                    'node_' + str(i)) for i in range(self.N_nodes)]
+                                    'node_' + str(i))
+                    for i in range(self.N_nodes)]
         self._simulate(t_stp=60)
         self.dones = set()
-        # TODO Resetting agents is not doing anything. It should return a new observation.
+        # TODO Resetting agents is not doing anything.
+        # It should return a new observation.
         # return {i: a.reset() for i, a in enumerate(self.agents)}
         observation = self._get_obs()
         info = self._get_info()
@@ -228,23 +232,23 @@ class BasicMultiAgent(MultiAgentEnv):
             for gs in self.gss:
                 gs.propagate(t_stp)     # propagate all ground stations nodes
             self.mgs.propagate(t_stp)        # propagate master ground station
-            mgs_sc = self.mgs.skycoord
+            mgs_sc = self.mgs.skycoord.cartesian
             for sat in self.agents:
                 los_evnt = line_of_sight([mgs_sc.x, mgs_sc.y, mgs_sc.z] * u.km,
-                                        sat.orb.r, 6371*u.km)
-            if los_evnt >= 0:
-                self.mgs.rcv_data(sat.name, sat.dwnl_data())
-                dones[sat.name] = 1
+                                         sat.orb.r, 6371*u.km)
+                if los_evnt >= 0:
+                    self.mgs.rcv_data(sat.name, sat.dwnl_data())
+                    dones[sat.name] = 1
             for gs in self.gss:
-                gs_sc = gs.skycoord
+                gs_sc = gs.skycoord.cartesian
                 payload, id = gs.transmission()
-                for sat in self.sats:
-                    los_evnt = line_of_sight([gs_sc.x, gs_sc.y, gs_sc.z] * u.km,
-                                            sat.orb.r, 6371*u.km)
+                for sat in self.agents:
+                    los_evnt = line_of_sight([gs_sc.x, gs_sc.y,
+                                              gs_sc.z] * u.km,
+                                             sat.orb.r, 6371*u.km)
                     if los_evnt >= 0 and payload is not None:
                         # The satellite received data!
                         sat.rcv_data(gs.name, id, payload)
-
 
     def _get_info(self):
         return None
@@ -253,14 +257,26 @@ class BasicMultiAgent(MultiAgentEnv):
         # Returns the current state observation
         return self.mgs.get_obs()
 
+    def _calc_reward(self, action, observation):
+        gs_value = np.zeros(self.N_nodes)
+        for sat_name, act in action.items():
+            value = np.multiply(observation[sat_name], act)
+            gs_value += value
+        # give negative reward for multiple trasmissions of same gs
+        gs_value[gs_value > 1] = - gs_value[gs_value > 1]
+        return np.sum(gs_value)
+
     def step(self, action_dict):
-        obs, rew, done, info = {}, {}, {}, {}
-        for i, action in action_dict.items():
-            obs[i], rew[i], done[i], info[i] = self.agents[i].step(action)
-            if done[i]:
-                self.dones.add(i)
-        done["__all__"] = len(self.dones) == len(self.agents)
-        return obs, rew, done, info
+        if len(action_dict) != self.N_constellation:
+            raise RuntimeError 
+        # elif len(action_dict[0]) != self.N_nodes:
+        #     raise RuntimeError
+        self._simulate(t_stp=60)
+        observation = self._get_obs()
+        info = self._get_info()
+        rew = self._calc_reward(action_dict, observation)
+        done = 0
+        return observation, rew, done, info
 
     def render(self, mode="rgb_array"):
         # Just generate a random image here foNr demonstration purposes.
@@ -268,4 +284,11 @@ class BasicMultiAgent(MultiAgentEnv):
         # an example on how to use a Viewer object.
         return np.random.randint(0, 256, size=(200, 300, 3), dtype=np.uint8)
 
-maenv = BasicMultiAgent(4, 6)
+
+maenv = PICO_MultiAgent(4, 6)
+maenv.reset()
+
+action = {'PICO_1': [0, 1, 0, 1, 1, 1], 'PICO_2': [0, 1, 0, 1, 1, 1],
+          'PICO_0': [0, 1, 0, 1, 1, 1], 'PICO_3': [0, 1, 0, 1, 1, 1]}
+maenv.step(action)
+print('done!')
