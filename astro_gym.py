@@ -3,6 +3,7 @@ import pandas as pd
 import copy
 import random
 import gym
+import ray
 
 from astropy import units as u
 from astropy.coordinates import SkyCoord
@@ -12,6 +13,7 @@ from poliastro.twobody import Orbit
 from poliastro.core.events import line_of_sight
 
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
+from ray.tune.registry import register_env
 from ray.rllib.algorithms import ppo
 
 INT_CLOCK = 1672531200  # 01.01.2023
@@ -193,6 +195,7 @@ class PICO_MultiAgent(MultiAgentEnv):
                        for i in range(N_constellation)]
         self._agent_ids = set(range(N_constellation))
         self.sat_names = [sat.name for sat in self.agents]
+        self._agent_ids = self.sat_names
         self.mgs = master_gs(N_nodes, 45.45, 10.25, 100, 'Master Brescia GS')
         self.gss = [sched_transm_gs(np.random.randint(-89, 89),
                                     np.random.randint(-179, 180),
@@ -222,7 +225,7 @@ class PICO_MultiAgent(MultiAgentEnv):
         # return {i: a.reset() for i, a in enumerate(self.agents)}
         observation = self._get_obs()
         info = self._get_info()
-        return observation, info
+        return observation
 
     def _simulate(self, t_stp):
         dones = dict.fromkeys(self.sat_names, 0)
@@ -251,7 +254,7 @@ class PICO_MultiAgent(MultiAgentEnv):
                         sat.rcv_data(gs.name, id, payload)
 
     def _get_info(self):
-        return None
+        return dict.fromkeys(self.sat_names, None)
 
     def _get_obs(self):
         # Returns the current state observation
@@ -275,8 +278,9 @@ class PICO_MultiAgent(MultiAgentEnv):
         observation = self._get_obs()
         info = self._get_info()
         rew = self._calc_reward(action_dict, observation)
-        done = 0
-        return observation, rew, done, info
+        reward = dict.fromkeys(self.sat_names, rew)
+        done = dict.fromkeys(self.sat_names, 0)
+        return observation, reward, done, info
 
     def render(self, mode="rgb_array"):
         # Just generate a random image here foNr demonstration purposes.
@@ -284,11 +288,23 @@ class PICO_MultiAgent(MultiAgentEnv):
         # an example on how to use a Viewer object.
         return np.random.randint(0, 256, size=(200, 300, 3), dtype=np.uint8)
 
+def pico_env_creator(env_config):
+    return PICO_MultiAgent(env_config['N_constellation'], env_config['N_nodes'])
 
-maenv = PICO_MultiAgent(4, 6)
-maenv.reset()
+# maenv = PICO_MultiAgent(4, 6)
+ray.init()
+register_env("pico_env", pico_env_creator)
+algo = ppo.PPO(env="pico_env", config={"env_config": {
+        "N_constellation": 4, "N_nodes": 6  # config to pass to env class
+        }})
 
-action = {'PICO_1': [0, 1, 0, 1, 1, 1], 'PICO_2': [0, 1, 0, 1, 1, 1],
-          'PICO_0': [0, 1, 0, 1, 1, 1], 'PICO_3': [0, 1, 0, 1, 1, 1]}
-maenv.step(action)
+# maenv.reset()
+
+# action = {'PICO_1': [0, 1, 0, 1, 1, 1], 'PICO_2': [0, 1, 0, 1, 1, 1],
+#           'PICO_0': [0, 1, 0, 1, 1, 1], 'PICO_3': [0, 1, 0, 1, 1, 1]}
+# maenv.step(action)
+
+
+while True:
+    print(algo.train())
 print('done!')
