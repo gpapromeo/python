@@ -15,6 +15,7 @@ from poliastro.core.events import line_of_sight
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from ray.tune.registry import register_env
 from ray.rllib.algorithms import ppo
+from ray.rllib.algorithms import dqn
 
 INT_CLOCK = 1672531200  # 01.01.2023
 
@@ -254,7 +255,7 @@ class PICO_MultiAgent(MultiAgentEnv):
                         sat.rcv_data(gs.name, id, payload)
 
     def _get_info(self):
-        return dict.fromkeys(self.sat_names, None)
+        return dict.fromkeys(self.sat_names, dict())
 
     def _get_obs(self):
         # Returns the current state observation
@@ -270,8 +271,8 @@ class PICO_MultiAgent(MultiAgentEnv):
         return np.sum(gs_value)
 
     def step(self, action_dict):
-        if len(action_dict) != self.N_constellation:
-            raise RuntimeError 
+        # if len(action_dict) != self.N_constellation:
+        #     raise RuntimeError('Wrong action sample length')
         # elif len(action_dict[0]) != self.N_nodes:
         #     raise RuntimeError
         self._simulate(t_stp=60)
@@ -279,7 +280,7 @@ class PICO_MultiAgent(MultiAgentEnv):
         info = self._get_info()
         rew = self._calc_reward(action_dict, observation)
         reward = dict.fromkeys(self.sat_names, rew)
-        done = dict.fromkeys(self.sat_names, 0)
+        done = dict.fromkeys(self.sat_names, False)
         return observation, reward, done, info
 
     def render(self, mode="rgb_array"):
@@ -291,12 +292,18 @@ class PICO_MultiAgent(MultiAgentEnv):
 def pico_env_creator(env_config):
     return PICO_MultiAgent(env_config['N_constellation'], env_config['N_nodes'])
 
+
 # maenv = PICO_MultiAgent(4, 6)
-ray.init()
+# ray.init()
 register_env("pico_env", pico_env_creator)
-algo = ppo.PPO(env="pico_env", config={"env_config": {
-        "N_constellation": 4, "N_nodes": 6  # config to pass to env class
-        }})
+algo = dqn.DQN(env="pico_env", config={
+                "env_config": {
+                    "N_constellation": 4, "N_nodes": 6  # config to pass to env class
+                    },
+                "observation_space": None,
+                "action_space": None,
+                "num_workers": 0
+                })
 
 # maenv.reset()
 
